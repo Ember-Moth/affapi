@@ -339,22 +339,64 @@ class AffController extends Controller
     public function exportInvitedUsers(Request $request)
     {
         try {
+            // 获取当前用户
             $currentUser = $request->get('user');
             if (!$currentUser) {
-                return response(['message' => '用户未登录'], 401);
+                return response([
+                    'message' => '用户未登录或登录已过期'
+                ], 401);
             }
 
             $userId = is_array($currentUser) ? $currentUser['id'] : $currentUser->id;
             
-            // 获取所有套餐
+            // 获取分页参数
+            $page = $request->input('page', 1);
+            $perPage = 1000; // 每次导出1000条
+            
+            // 先获取所有套餐
             $plans = Plan::pluck('name', 'id')->toArray();
             
-            // 获取所有邀请用户
-            $users = User::where('invite_user_id', $userId)->get();
+            // 构建查询
+            $query = User::where('invite_user_id', $userId);
             
-            // 准备 CSV 数据
+            // 计算总页数
+            $total = $query->count();
+            $totalPages = ceil($total / $perPage);
+            
+            if ($page > $totalPages) {
+                return response([
+                    'message' => '导出完成',
+                    'data' => [
+                        'finished' => true,
+                        'total' => $total,
+                        'current_page' => $page,
+                        'total_pages' => $totalPages
+                    ]
+                ]);
+            }
+            
+            // 获取当前页数据
+            $users = $query->offset(($page - 1) * $perPage)
+                          ->limit($perPage)
+                          ->get();
+            
+            // 生成CSV数据
             $csvData = [];
-            $csvData[] = ['邮箱', '套餐', '新购次数', '续费次数', '升级次数', '获得佣金', '注册时间', '到期时间', '状态'];
+            
+            // 如果是第一页，添加表头
+            if ($page === 1) {
+                $csvData[] = [
+                    '邮箱',
+                    '套餐',
+                    '新购订单',
+                    '续费订单',
+                    '升级订单',
+                    '总佣金',
+                    '注册时间',
+                    '到期时间',
+                    '状态'
+                ];
+            }
             
             foreach ($users as $user) {
                 $orders = Order::where('user_id', $user->id)
@@ -396,7 +438,7 @@ class AffController extends Controller
             }
             
             // 创建 CSV 文件
-            $filename = 'invited_users_' . date('YmdHis') . '.csv';
+            $filename = 'invited_users_' . date('YmdHis') . '_part' . $page . '.csv';
             $handle = fopen('php://temp', 'r+');
             
             // 添加 UTF-8 BOM
@@ -410,9 +452,15 @@ class AffController extends Controller
             $csv = stream_get_contents($handle);
             fclose($handle);
             
-            return response($csv, 200, [
-                'Content-Type' => 'text/csv; charset=UTF-8',
-                'Content-Disposition' => 'attachment; filename="' . $filename . '"'
+            return response([
+                'data' => [
+                    'finished' => false,
+                    'content' => base64_encode($csv),
+                    'filename' => $filename,
+                    'total' => $total,
+                    'current_page' => $page,
+                    'total_pages' => $totalPages
+                ]
             ]);
             
         } catch (\Exception $e) {
